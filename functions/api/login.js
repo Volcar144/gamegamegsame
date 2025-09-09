@@ -1,45 +1,74 @@
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
+import { SignJWT, jwtVerify } from 'jose';
 
-const SECRET = 'efhwiuhwhehiu&Y&£&87iyhdjdudhfF:V>LDKHfvfhfududd'; // Change to strong secret
+// Convert secret string to Uint8Array for jose
+const SECRET = new TextEncoder().encode('efhwiuhwhehiu&Y&£&87iyhdjdudhfF:V>LDKHfvfhfududd');
+
+async function hashPassword(password, salt) {
+  // simple SHA-256 hash with salt
+  const msgUint8 = new TextEncoder().encode(salt + password);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
+  return Buffer.from(hashBuffer).toString('hex');
+}
+
+function generateSalt() {
+  // random 16 char salt
+  return crypto.getRandomValues(new Uint8Array(8)).reduce((str, b) => str + b.toString(16).padStart(2, '0'), '');
+}
 
 export async function onRequestPost({ request, env }) {
   const data = await request.json();
   const { username, password } = data;
 
-  if(!username || !password || username.length < 3 || username.length > 15 || password.length < 6) {
-    return new Response(JSON.stringify({error:'Invalid username or password'}), {status:400});
+  if (!username || !password || username.length < 3 || username.length > 15 || password.length < 6) {
+    return new Response(JSON.stringify({ error: 'Invalid username or password' }), { status: 400 });
   }
 
   const kv = env.USERS_KV;
 
   // Check if user exists
-  let userData = await kv.get(username);
-  if(userData) {
-    userData = JSON.parse(userData);
-    // Verify password
-    const match = await bcrypt.compare(password, userData.hash);
-    if(!match) {
-      return new Response(JSON.stringify({error:'Invalid credentials'}), {status:401});
+  let userDataRaw = await kv.get(username);
+  if (userDataRaw) {
+    const userData = JSON.parse(userDataRaw);
+
+    // Verify password: hash input password with stored salt and compare to stored hash
+    const inputHash = await hashPassword(password, userData.salt);
+    if (inputHash !== userData.hash) {
+      return new Response(JSON.stringify({ error: 'Invalid credentials' }), { status: 401 });
     }
+
+    // Create JWT token
+    const token = await new SignJWT({ username, playerId: userData.playerId })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setExpirationTime('7d')
+      .sign(SECRET);
+
+    return new Response(JSON.stringify({ token, playerId: userData.playerId }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+
   } else {
     // Register new user
-    const hash = await bcrypt.hash(password, 10);
-    userData = {
+    const salt = generateSalt();
+    const hash = await hashPassword(password, salt);
+    const userData = {
       username,
       hash,
+      salt,
       playerId: crypto.randomUUID(),
-      customization: {color:'#00ff00', weapon:'pistol'},
+      customization: { color: '#00ff00', weapon: 'pistol' },
       score: 0,
       kills: 0
     };
     await kv.put(username, JSON.stringify(userData));
+
+    // Create JWT token
+    const token = await new SignJWT({ username, playerId: userData.playerId })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setExpirationTime('7d')
+      .sign(SECRET);
+
+    return new Response(JSON.stringify({ token, playerId: userData.playerId }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
-
-  // Create JWT token
-  const token = jwt.sign({username, playerId: userData.playerId}, SECRET, {expiresIn:'7d'});
-
-  return new Response(JSON.stringify({token, playerId: userData.playerId}), {
-    headers: {'Content-Type':'application/json'}
-  });
 }
