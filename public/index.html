@@ -1,0 +1,1214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TopDown Shooter Multiplayer</title>
+<style>
+  /* Reset and base */
+  body, html {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: #121212;
+    color: #eee;
+    user-select: none;
+  }
+  #login-screen, #lobby-screen, #game-screen {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: #121212;
+  }
+  #login-screen { z-index: 10; }
+  #lobby-screen, #game-screen { display: none; }
+  input, button, select {
+    font-size: 1.1rem;
+    margin: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 5px;
+    border: none;
+  }
+  button {
+    background: #2a9d8f;
+    color: #fff;
+    cursor: pointer;
+    transition: background 0.3s;
+  }
+  button:hover {
+    background: #21867a;
+  }
+  #game-canvas {
+    background: #222;
+    border: 2px solid #2a9d8f;
+    display: block;
+    margin: 0 auto;
+  }
+  #scoreboard {
+    position: absolute;
+    top: 10px; right: 10px;
+    background: rgba(0,0,0,0.7);
+    padding: 10px;
+    border-radius: 8px;
+    max-width: 250px;
+    font-size: 0.9rem;
+  }
+  #customization-panel {
+    position: absolute;
+    bottom: 10px; left: 10px;
+    background: rgba(0,0,0,0.7);
+    padding: 10px;
+    border-radius: 8px;
+    max-width: 300px;
+  }
+  #map-vote {
+    margin-top: 10px;
+  }
+  #chat {
+    position: absolute;
+    bottom: 10px; right: 10px;
+    width: 300px;
+    max-height: 200px;
+    background: rgba(0,0,0,0.7);
+    border-radius: 8px;
+    overflow-y: auto;
+    font-size: 0.85rem;
+    padding: 10px;
+  }
+  #chat input {
+    width: calc(100% - 22px);
+  }
+</style>
+</head>
+<body>
+
+<!-- Login Screen -->
+<div id="login-screen">
+  <h1>TopDown Shooter Multiplayer</h1>
+  <input type="text" id="username-input" placeholder="Enter username (3-15 chars)" maxlength="15" />
+  <input type="password" id="password-input" placeholder="Enter password" />
+  <button id="login-btn">Login / Register</button>
+  <div id="login-message" style="color:#f55; margin-top:10px;"></div>
+</div>
+
+<!-- Lobby Screen -->
+<div id="lobby-screen">
+  <h2>Welcome, <span id="display-username"></span></h2>
+  <div>
+    <label for="mode-select">Select Mode:</label>
+    <select id="mode-select">
+      <option value="1v1">1v1 PvP</option>
+      <option value="multiplayer">Multiplayer PvP</option>
+      <option value="zombies">Zombies PvE</option>
+    </select>
+  </div>
+  <button id="join-lobby-btn">Join Lobby</button>
+  <button id="logout-btn" style="margin-left:20px; background:#d9534f;">Logout</button>
+  <div id="lobby-message" style="margin-top:10px; color:#2a9d8f;"></div>
+  <div id="map-vote">
+    <h3>Vote for Next Map</h3>
+    <div id="map-options"></div>
+    <button id="submit-vote-btn" disabled>Submit Vote</button>
+  </div>
+  <div id="scoreboard" style="margin-top:20px;">
+    <h3>Global Leaderboard</h3>
+    <ol id="leaderboard-list"></ol>
+  </div>
+</div>
+
+<!-- Game Screen -->
+<div id="game-screen">
+  <canvas id="game-canvas" width="900" height="600"></canvas>
+  <div id="scoreboard"></div>
+  <div id="customization-panel">
+    <h4>Customization</h4>
+    <label>Color:
+      <input type="color" id="color-picker" value="#00ff00" />
+    </label><br/>
+    <label>Weapon:
+      <select id="weapon-select">
+        <option value="pistol">Pistol</option>
+        <option value="rifle">Rifle</option>
+        <option value="shotgun">Shotgun</option>
+      </select>
+    </label><br/>
+    <button id="apply-custom-btn">Apply</button>
+  </div>
+  <div id="chat">
+    <div id="chat-messages" style="height:160px; overflow-y:auto;"></div>
+    <input type="text" id="chat-input" placeholder="Type message..." />
+  </div>
+  <button id="exit-game-btn" style="position:absolute; top:10px; left:10px; background:#d9534f;">Exit Game</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.4.7/dist/peerjs.min.js"></script>
+<script>
+(() => {
+  // Constants
+  const API_BASE = '/api'; // Cloudflare Functions base path
+  const CANVAS_WIDTH = 900;
+  const CANVAS_HEIGHT = 600;
+  const PLAYER_RADIUS = 15;
+  const BULLET_RADIUS = 5;
+  const ZOMBIE_RADIUS = 18;
+  const MAX_HEALTH = 100;
+
+  // Maps data (10 maps)
+  const MAPS = [
+    {
+      id: 'map1',
+      name: 'Urban Ruins',
+      walls: [
+        {x:100,y:100,w:700,h:20},
+        {x:100,y:480,w:700,h:20},
+        {x:100,y:120,w:20,h:360},
+        {x:780,y:120,w:20,h:360},
+        {x:350,y:250,w:200,h:20},
+        {x:350,y:350,w:200,h:20},
+      ],
+      spawnPoints: [{x:150,y:150},{x:730,y:150},{x:150,y:450},{x:730,y:450}]
+    },
+    {
+      id: 'map2',
+      name: 'Desert Outpost',
+      walls: [
+        {x:50,y:50,w:800,h:20},
+        {x:50,y:530,w:800,h:20},
+        {x:50,y:70,w:20,h:460},
+        {x:830,y:70,w:20,h:460},
+        {x:200,y:200,w:500,h:20},
+        {x:200,y:400,w:500,h:20},
+        {x:350,y:220,w:20,h:180},
+        {x:650,y:220,w:20,h:180},
+      ],
+      spawnPoints: [{x:100,y:100},{x:800,y:500},{x:100,y:500},{x:800,y:100}]
+    },
+    {
+      id: 'map3',
+      name: 'Forest Clearing',
+      walls: [
+        {x:0,y:0,w:900,h:20},
+        {x:0,y:580,w:900,h:20},
+        {x:0,y:0,w:20,h:600},
+        {x:880,y:0,w:20,h:600},
+        {x:300,y:100,w:20,h:400},
+        {x:580,y:100,w:20,h:400},
+        {x:320,y:100,w:260,h:20},
+        {x:320,y:480,w:260,h:20},
+      ],
+      spawnPoints: [{x:50,y:300},{x:850,y:300},{x:450,y:50},{x:450,y:550}]
+    },
+    {
+      id: 'map4',
+      name: 'Industrial Complex',
+      walls: [
+        {x:0,y:0,w:900,h:20},
+        {x:0,y:580,w:900,h:20},
+        {x:0,y:0,w:20,h:600},
+        {x:880,y:0,w:20,h:600},
+        {x:100,y:100,w:700,h:20},
+        {x:100,y:480,w:700,h:20},
+        {x:100,y:100,w:20,h:400},
+        {x:780,y:100,w:20,h:400},
+        {x:400,y:250,w:100,h:20},
+        {x:400,y:350,w:100,h:20},
+      ],
+      spawnPoints: [{x:150,y:150},{x:730,y:150},{x:150,y:450},{x:730,y:450}]
+    },
+    {
+      id: 'map5',
+      name: 'Snowy Village',
+      walls: [
+        {x:0,y:0,w:900,h:20},
+        {x:0,y:580,w:900,h:20},
+        {x:0,y:0,w:20,h:600},
+        {x:880,y:0,w:20,h:600},
+        {x:200,y:200,w:500,h:20},
+        {x:200,y:380,w:500,h:20},
+        {x:200,y:200,w:20,h:200},
+        {x:680,y:200,w:20,h:200},
+      ],
+      spawnPoints: [{x:100,y:100},{x:800,y:500},{x:100,y:500},{x:800,y:100}]
+    },
+    {
+      id: 'map6',
+      name: 'Canyon Pass',
+      walls: [
+        {x:0,y:0,w:900,h:20},
+        {x:0,y:580,w:900,h:20},
+        {x:0,y:0,w:20,h:600},
+        {x:880,y:0,w:20,h:600},
+        {x:150,y:150,w:600,h:20},
+        {x:150,y:430,w:600,h:20},
+        {x:150,y:150,w:20,h:300},
+        {x:730,y:150,w:20,h:300},
+        {x:400,y:250,w:100,h:20},
+        {x:400,y:350,w:100,h:20},
+      ],
+      spawnPoints: [{x:100,y:300},{x:800,y:300},{x:450,y:50},{x:450,y:550}]
+    },
+    {
+      id: 'map7',
+      name: 'Abandoned Factory',
+      walls: [
+        {x:0,y:0,w:900,h:20},
+        {x:0,y:580,w:900,h:20},
+        {x:0,y:0,w:20,h:600},
+        {x:880,y:0,w:20,h:600},
+        {x:100,y:100,w:700,h:20},
+        {x:100,y:480,w:700,h:20},
+        {x:100,y:100,w:20,h:400},
+        {x:780,y:100,w:20,h:400},
+        {x:350,y:250,w:200,h:20},
+        {x:350,y:350,w:200,h:20},
+      ],
+      spawnPoints: [{x:150,y:150},{x:730,y:150},{x:150,y:450},{x:730,y:450}]
+    },
+    {
+      id: 'map8',
+      name: 'City Park',
+      walls: [
+        {x:0,y:0,w:900,h:20},
+        {x:0,y:580,w:900,h:20},
+        {x:0,y:0,w:20,h:600},
+        {x:880,y:0,w:20,h:600},
+        {x:250,y:200,w:400,h:20},
+        {x:250,y:380,w:400,h:20},
+        {x:250,y:200,w:20,h:200},
+        {x:630,y:200,w:20,h:200},
+      ],
+      spawnPoints: [{x:100,y:100},{x:800,y:500},{x:100,y:500},{x:800,y:100}]
+    },
+    {
+      id: 'map9',
+      name: 'Military Base',
+      walls: [
+        {x:0,y:0,w:900,h:20},
+        {x:0,y:580,w:900,h:20},
+        {x:0,y:0,w:20,h:600},
+        {x:880,y:0,w:20,h:600},
+        {x:150,y:150,w:600,h:20},
+        {x:150,y:430,w:600,h:20},
+        {x:150,y:150,w:20,h:300},
+        {x:730,y:150,w:20,h:300},
+        {x:400,y:250,w:100,h:20},
+        {x:400,y:350,w:100,h:20},
+      ],
+      spawnPoints: [{x:100,y:300},{x:800,y:300},{x:450,y:50},{x:450,y:550}]
+    },
+    {
+      id: 'map10',
+      name: 'Space Station',
+      walls: [
+        {x:0,y:0,w:900,h:20},
+        {x:0,y:580,w:900,h:20},
+        {x:0,y:0,w:20,h:600},
+        {x:880,y:0,w:20,h:600},
+        {x:300,y:100,w:20,h:400},
+        {x:580,y:100,w:20,h:400},
+        {x:320,y:100,w:260,h:20},
+        {x:320,y:480,w:260,h:20},
+      ],
+      spawnPoints: [{x:50,y:300},{x:850,y:300},{x:450,y:50},{x:450,y:550}]
+    }
+  ];
+
+  // Weapons data
+  const WEAPONS = {
+    pistol: {name:'Pistol', damage:15, fireRate:400, bulletSpeed:7, bulletColor:'#ffcc00'},
+    rifle: {name:'Rifle', damage:10, fireRate:150, bulletSpeed:10, bulletColor:'#00ccff'},
+    shotgun: {name:'Shotgun', damage:8, fireRate:800, bulletSpeed:6, bulletColor:'#ff3300', pellets:5, spread:0.3}
+  };
+
+  // Globals
+  let peer = null;
+  let peerId = null;
+  let conn = null;
+  let connections = {}; // For multiplayer mode
+  let isHost = false;
+  let gameMode = null;
+  let gameRunning = false;
+  let gameState = null;
+  let playerId = null;
+  let username = null;
+  let token = null;
+  let customization = {
+    color: '#00ff00',
+    weapon: 'pistol'
+  };
+  let mapId = null;
+  let mapVote = null;
+  let lobbyPlayers = [];
+  let lobbyId = null;
+  let chatHistory = [];
+
+  // DOM Elements
+  const loginScreen = document.getElementById('login-screen');
+  const lobbyScreen = document.getElementById('lobby-screen');
+  const gameScreen = document.getElementById('game-screen');
+  const usernameInput = document.getElementById('username-input');
+  const passwordInput = document.getElementById('password-input');
+  const loginBtn = document.getElementById('login-btn');
+  const loginMessage = document.getElementById('login-message');
+  const displayUsername = document.getElementById('display-username');
+  const modeSelect = document.getElementById('mode-select');
+  const joinLobbyBtn = document.getElementById('join-lobby-btn');
+  const logoutBtn = document.getElementById('logout-btn');
+  const lobbyMessage = document.getElementById('lobby-message');
+  const mapOptionsDiv = document.getElementById('map-options');
+  const submitVoteBtn = document.getElementById('submit-vote-btn');
+  const leaderboardList = document.getElementById('leaderboard-list');
+  const gameCanvas = document.getElementById('game-canvas');
+  const ctx = gameCanvas.getContext('2d');
+  const colorPicker = document.getElementById('color-picker');
+  const weaponSelect = document.getElementById('weapon-select');
+  const applyCustomBtn = document.getElementById('apply-custom-btn');
+  const exitGameBtn = document.getElementById('exit-game-btn');
+  const chatMessagesDiv = document.getElementById('chat-messages');
+  const chatInput = document.getElementById('chat-input');
+  const scoreboardDiv = document.getElementById('scoreboard');
+
+  // Utility Functions
+  function log(msg) {
+    console.log('[Game]', msg);
+  }
+  function randomChoice(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+  }
+  function distance(x1,y1,x2,y2) {
+    return Math.sqrt((x1-x2)**2 + (y1-y2)**2);
+  }
+  function rectsIntersect(r1, r2) {
+    return !(r2.x > r1.x + r1.w || 
+             r2.x + r2.w < r1.x || 
+             r2.y > r1.y + r1.h ||
+             r2.y + r2.h < r1.y);
+  }
+  function circleRectCollision(cx, cy, radius, rx, ry, rw, rh) {
+    // Find closest point to circle center within rectangle
+    let closestX = Math.max(rx, Math.min(cx, rx + rw));
+    let closestY = Math.max(ry, Math.min(cy, ry + rh));
+    let distX = cx - closestX;
+    let distY = cy - closestY;
+    return (distX * distX + distY * distY) < (radius * radius);
+  }
+  function circleCircleCollision(x1,y1,r1,x2,y2,r2) {
+    return distance(x1,y1,x2,y2) < (r1 + r2);
+  }
+
+  // API Calls
+  async function apiFetch(path, options = {}) {
+    options.headers = options.headers || {};
+    if(token) options.headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch(API_BASE + path, options);
+    if(res.status === 401) {
+      logout();
+      throw new Error('Unauthorized');
+    }
+    return res.json();
+  }
+
+  // Authentication
+  async function login() {
+    const user = usernameInput.value.trim();
+    const pass = passwordInput.value;
+    if(user.length < 3 || user.length > 15) {
+      loginMessage.textContent = 'Username must be 3-15 characters.';
+      return;
+    }
+    if(pass.length < 6) {
+      loginMessage.textContent = 'Password must be at least 6 characters.';
+      return;
+    }
+    loginMessage.textContent = 'Logging in...';
+    try {
+      const res = await fetch(API_BASE + '/login', {
+        method: 'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({username: user, password: pass})
+      });
+      const data = await res.json();
+      if(!res.ok) {
+        loginMessage.textContent = data.error || 'Login failed.';
+        return;
+      }
+      token = data.token;
+      username = user;
+      playerId = data.playerId;
+      customization = data.customization || customization;
+      colorPicker.value = customization.color;
+      weaponSelect.value = customization.weapon;
+      loginMessage.textContent = '';
+      showLobby();
+      loadLeaderboard();
+    } catch(e) {
+      loginMessage.textContent = 'Network error.';
+    }
+  }
+
+  async function logout() {
+    token = null;
+    username = null;
+    playerId = null;
+    customization = {color:'#00ff00', weapon:'pistol'};
+    peer && peer.destroy();
+    peer = null;
+    conn = null;
+    connections = {};
+    isHost = false;
+    gameRunning = false;
+    gameState = null;
+    lobbyPlayers = [];
+    lobbyId = null;
+    mapVote = null;
+    loginScreen.style.display = 'flex';
+    lobbyScreen.style.display = 'none';
+    gameScreen.style.display = 'none';
+  }
+
+  // Show Lobby Screen
+  function showLobby() {
+    loginScreen.style.display = 'none';
+    lobbyScreen.style.display = 'flex';
+    gameScreen.style.display = 'none';
+    displayUsername.textContent = username;
+    lobbyMessage.textContent = '';
+    submitVoteBtn.disabled = true;
+    renderMapOptions();
+  }
+
+  // Show Game Screen
+  function showGame() {
+    loginScreen.style.display = 'none';
+    lobbyScreen.style.display = 'none';
+    gameScreen.style.display = 'flex';
+    scoreboardDiv.innerHTML = '';
+  }
+
+  // Render Map Voting Options
+  function renderMapOptions() {
+    mapOptionsDiv.innerHTML = '';
+    MAPS.forEach((map, idx) => {
+      const label = document.createElement('label');
+      label.style.display = 'block';
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'map-vote';
+      radio.value = map.id;
+      radio.addEventListener('change', () => {
+        mapVote = radio.value;
+        submitVoteBtn.disabled = false;
+      });
+      label.appendChild(radio);
+      label.appendChild(document.createTextNode(' ' + map.name));
+      mapOptionsDiv.appendChild(label);
+    });
+  }
+
+  // Load Leaderboard
+  async function loadLeaderboard() {
+    try {
+      const data = await apiFetch('/leaderboard');
+      leaderboardList.innerHTML = '';
+      data.top.forEach((entry, idx) => {
+        const li = document.createElement('li');
+        li.textContent = `${entry.username}: ${entry.score}`;
+        leaderboardList.appendChild(li);
+      });
+    } catch(e) {
+      lobbyMessage.textContent = 'Failed to load leaderboard.';
+    }
+  }
+
+  // Save Customization
+  async function saveCustomization() {
+    customization.color = colorPicker.value;
+    customization.weapon = weaponSelect.value;
+    try {
+      await apiFetch('/customization', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(customization)
+      });
+    } catch(e) {
+      alert('Failed to save customization.');
+    }
+  }
+
+  // PeerJS Setup
+  function setupPeer() {
+    peer = new Peer(undefined, {
+      host: 'peerjs-server.herokuapp.com',
+      secure: true,
+      port: 443,
+      debug: 2
+    });
+    peer.on('open', id => {
+      peerId = id;
+      log('PeerJS connected with ID: ' + id);
+    });
+    peer.on('connection', c => {
+      log('Incoming connection from ' + c.peer);
+      setupConnection(c);
+    });
+  }
+
+  // Setup Connection Handlers
+  function setupConnection(c) {
+    c.on('data', data => {
+      handleData(c.peer, data);
+    });
+    c.on('close', () => {
+      log('Connection closed: ' + c.peer);
+      delete connections[c.peer];
+      if(gameRunning) {
+        removePlayer(c.peer);
+      }
+    });
+    connections[c.peer] = c;
+  }
+
+  // Send Data to All Connections
+  function broadcast(data) {
+    Object.values(connections).forEach(c => {
+      c.send(data);
+    });
+  }
+
+  // Game State Management
+  function initGameState() {
+    gameState = {
+      players: {},
+      bullets: [],
+      zombies: [],
+      wave: 0,
+      waveTimer: 0,
+      upgrades: {},
+      map: getMapById(mapId),
+      chat: []
+    };
+  }
+
+  // Get map object by id
+  function getMapById(id) {
+    return MAPS.find(m => m.id === id) || MAPS[0];
+  }
+
+  // Add player to game state
+  function addPlayer(id, name, customization, spawnPoint) {
+    gameState.players[id] = {
+      id,
+      name,
+      x: spawnPoint.x,
+      y: spawnPoint.y,
+      vx: 0,
+      vy: 0,
+      angle: 0,
+      health: MAX_HEALTH,
+      color: customization.color,
+      weapon: customization.weapon,
+      score: 0,
+      kills: 0,
+      upgrades: {
+        damage: 0,
+        speed: 0,
+        fireRate: 0
+      },
+      lastFire: 0,
+      inputs: {up:false,down:false,left:false,right:false,shoot:false,mouseAngle:0}
+    };
+  }
+
+  // Remove player
+  function removePlayer(id) {
+    if(gameState && gameState.players[id]) {
+      delete gameState.players[id];
+    }
+  }
+
+  // Handle incoming data from peer
+  function handleData(peerId, data) {
+    if(!gameRunning) return;
+    if(data.type === 'input') {
+      if(gameState.players[peerId]) {
+        gameState.players[peerId].inputs = data.inputs;
+      }
+    } else if(data.type === 'chat') {
+      gameState.chat.push({from: gameState.players[peerId]?.name || 'Unknown', message: data.message});
+      if(gameState.chat.length > 100) gameState.chat.shift();
+      updateChat();
+      if(isHost) broadcast({type:'chat', from: gameState.players[peerId]?.name || 'Unknown', message: data.message});
+    } else if(data.type === 'customization') {
+      if(gameState.players[peerId]) {
+        gameState.players[peerId].color = data.color;
+        gameState.players[peerId].weapon = data.weapon;
+      }
+    }
+  }
+
+  // Update chat UI
+  function updateChat() {
+    chatMessagesDiv.innerHTML = '';
+    gameState.chat.forEach(msg => {
+      const div = document.createElement('div');
+      div.textContent = `${msg.from}: ${msg.message}`;
+      chatMessagesDiv.appendChild(div);
+    });
+    chatMessagesDiv.scrollTop = chatMessagesDiv.scrollHeight;
+  }
+
+  // Game Loop Variables
+  let lastFrameTime = 0;
+
+  // Game Loop
+  function gameLoop(timestamp) {
+    if(!lastFrameTime) lastFrameTime = timestamp;
+    const delta = timestamp - lastFrameTime;
+    lastFrameTime = timestamp;
+
+    if(gameRunning) {
+      if(isHost) {
+        updateGameState(delta);
+        broadcast({type:'state', state: gameState});
+      }
+      renderGame();
+    }
+
+    requestAnimationFrame(gameLoop);
+  }
+
+  // Update Game State (host only)
+  function updateGameState(delta) {
+    const dt = delta / 1000;
+    const map = gameState.map;
+
+    // Update players
+    Object.values(gameState.players).forEach(p => {
+      // Movement speed with upgrades
+      const speed = 150 + (p.upgrades.speed * 20);
+      let dx = 0, dy = 0;
+      if(p.inputs.up) dy -= speed * dt;
+      if(p.inputs.down) dy += speed * dt;
+      if(p.inputs.left) dx -= speed * dt;
+      if(p.inputs.right) dx += speed * dt;
+
+      // Normalize diagonal movement
+      if(dx !== 0 && dy !== 0) {
+        dx /= Math.sqrt(2);
+        dy /= Math.sqrt(2);
+      }
+
+      // Collision with walls
+      let newX = p.x + dx;
+      let newY = p.y + dy;
+      if(!collidesWithWalls(newX, p.y, PLAYER_RADIUS)) p.x = newX;
+      if(!collidesWithWalls(p.x, newY, PLAYER_RADIUS)) p.y = newY;
+
+      // Update angle from mouse input
+      p.angle = p.inputs.mouseAngle;
+
+      // Shooting
+      if(p.inputs.shoot) {
+        const weapon = WEAPONS[p.weapon] || WEAPONS.pistol;
+        const now = Date.now();
+        const fireInterval = weapon.fireRate - (p.upgrades.fireRate * 20);
+        if(now - p.lastFire > fireInterval) {
+          p.lastFire = now;
+          shootBullet(p);
+        }
+      }
+    });
+
+    // Update bullets
+    gameState.bullets.forEach((b, i) => {
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+
+      // Remove bullet if out of bounds or hits wall
+      if(b.x < 0 || b.x > CANVAS_WIDTH || b.y < 0 || b.y > CANVAS_HEIGHT || collidesWithWalls(b.x, b.y, BULLET_RADIUS)) {
+        gameState.bullets.splice(i, 1);
+        return;
+      }
+
+      // Check collision with players (no friendly fire)
+      Object.values(gameState.players).forEach(p => {
+        if(p.id !== b.owner && circleCircleCollision(b.x, b.y, BULLET_RADIUS, p.x, p.y, PLAYER_RADIUS)) {
+          p.health -= b.damage;
+          if(p.health <= 0) {
+            p.health = 0;
+            gameState.players[b.owner].score += 100;
+            gameState.players[b.owner].kills++;
+            // Respawn player after 3 seconds
+            setTimeout(() => {
+              if(gameState.players[p.id]) {
+                const sp = randomChoice(map.spawnPoints);
+                p.x = sp.x;
+                p.y = sp.y;
+                p.health = MAX_HEALTH;
+              }
+            }, 3000);
+          }
+          gameState.bullets.splice(i, 1);
+        }
+      });
+
+      // Check collision with zombies
+      if(gameMode === 'zombies') {
+        gameState.zombies.forEach((z, zi) => {
+          if(circleCircleCollision(b.x, b.y, BULLET_RADIUS, z.x, z.y, ZOMBIE_RADIUS)) {
+            z.health -= b.damage;
+            if(z.health <= 0) {
+              gameState.players[b.owner].score += 50;
+              gameState.players[b.owner].kills++;
+              gameState.zombies.splice(zi, 1);
+            }
+            gameState.bullets.splice(i, 1);
+          }
+        });
+      }
+    });
+
+    // Update zombies (PvE mode)
+    if(gameMode === 'zombies') {
+      updateZombies(dt);
+      updateWave(dt);
+    }
+  }
+
+  // Check collision with walls
+  function collidesWithWalls(x, y, radius) {
+    const map = gameState.map;
+    for(const wall of map.walls) {
+      if(circleRectCollision(x, y, radius, wall.x, wall.y, wall.w, wall.h)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Shoot bullet
+  function shootBullet(player) {
+    const weapon = WEAPONS[player.weapon] || WEAPONS.pistol;
+    const angle = player.angle;
+    if(weapon.pellets) {
+      // Shotgun spread
+      for(let i=0; i<weapon.pellets; i++) {
+        const spreadAngle = angle + (Math.random() - 0.5) * weapon.spread;
+        const vx = Math.cos(spreadAngle) * weapon.bulletSpeed;
+        const vy = Math.sin(spreadAngle) * weapon.bulletSpeed;
+        gameState.bullets.push({
+          x: player.x + Math.cos(angle)*PLAYER_RADIUS,
+          y: player.y + Math.sin(angle)*PLAYER_RADIUS,
+          vx, vy,
+          damage: weapon.damage + player.upgrades.damage,
+          owner: player.id,
+          color: weapon.bulletColor
+        });
+      }
+    } else {
+      const vx = Math.cos(angle) * weapon.bulletSpeed;
+      const vy = Math.sin(angle) * weapon.bulletSpeed;
+      gameState.bullets.push({
+        x: player.x + Math.cos(angle)*PLAYER_RADIUS,
+        y: player.y + Math.sin(angle)*PLAYER_RADIUS,
+        vx, vy,
+        damage: weapon.damage + player.upgrades.damage,
+        owner: player.id,
+        color: weapon.bulletColor
+      });
+    }
+  }
+
+  // Update zombies AI
+  function updateZombies(dt) {
+    const map = gameState.map;
+    gameState.zombies.forEach(z => {
+      // Find closest player
+      let target = null;
+      let minDist = Infinity;
+      Object.values(gameState.players).forEach(p => {
+        if(p.health > 0) {
+          const dist = distance(z.x, z.y, p.x, p.y);
+          if(dist < minDist) {
+            minDist = dist;
+            target = p;
+          }
+        }
+      });
+      if(!target) return;
+
+      // Move towards target
+      const speed = 60;
+      const angle = Math.atan2(target.y - z.y, target.x - z.x);
+      const newX = z.x + Math.cos(angle) * speed * dt;
+      const newY = z.y + Math.sin(angle) * speed * dt;
+
+      if(!collidesWithWalls(newX, z.y, ZOMBIE_RADIUS)) z.x = newX;
+      if(!collidesWithWalls(z.x, newY, ZOMBIE_RADIUS)) z.y = newY;
+
+      // Attack if close
+      if(distance(z.x, z.y, target.x, target.y) < ZOMBIE_RADIUS + PLAYER_RADIUS) {
+        target.health -= 20 * dt;
+        if(target.health < 0) target.health = 0;
+      }
+    });
+  }
+
+  // Wave management
+  function updateWave(dt) {
+    if(gameState.zombies.length === 0) {
+      gameState.waveTimer -= dt;
+      if(gameState.waveTimer <= 0) {
+        startNextWave();
+      }
+    }
+  }
+
+  // Start next wave
+  function startNextWave() {
+    gameState.wave++;
+    gameState.waveTimer = 15; // 15 seconds between waves
+    const count = 5 + gameState.wave * 3;
+    for(let i=0; i<count; i++) {
+      // Spawn zombies at random edges
+      let x, y;
+      const edge = Math.floor(Math.random()*4);
+      if(edge === 0) { x = 0; y = Math.random()*CANVAS_HEIGHT; }
+      else if(edge === 1) { x = CANVAS_WIDTH; y = Math.random()*CANVAS_HEIGHT; }
+      else if(edge === 2) { x = Math.random()*CANVAS_WIDTH; y = 0; }
+      else { x = Math.random()*CANVAS_WIDTH; y = CANVAS_HEIGHT; }
+      gameState.zombies.push({
+        x, y,
+        health: 50 + gameState.wave*10,
+      });
+    }
+  }
+
+  // Render Game
+  function renderGame() {
+    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    // Draw map walls
+    ctx.fillStyle = '#444';
+    gameState.map.walls.forEach(w => {
+      ctx.fillRect(w.x, w.y, w.w, w.h);
+    });
+
+    // Draw players
+    Object.values(gameState.players).forEach(p => {
+      // Dead players are semi-transparent
+      ctx.globalAlpha = p.health > 0 ? 1 : 0.4;
+      // Player circle
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, PLAYER_RADIUS, 0, Math.PI*2);
+      ctx.fill();
+      // Gun direction
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x + Math.cos(p.angle)*PLAYER_RADIUS*1.5, p.y + Math.sin(p.angle)*PLAYER_RADIUS*1.5);
+      ctx.stroke();
+      // Health bar
+      ctx.fillStyle = '#f00';
+      ctx.fillRect(p.x - PLAYER_RADIUS, p.y - PLAYER_RADIUS - 10, PLAYER_RADIUS*2, 5);
+      ctx.fillStyle = '#0f0';
+      ctx.fillRect(p.x - PLAYER_RADIUS, p.y - PLAYER_RADIUS - 10, PLAYER_RADIUS*2 * (p.health/MAX_HEALTH), 5);
+      // Name
+      ctx.fillStyle = '#eee';
+      ctx.font = '12px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(p.name, p.x, p.y - PLAYER_RADIUS - 15);
+      ctx.globalAlpha = 1;
+    });
+
+    // Draw bullets
+    gameState.bullets.forEach(b => {
+      ctx.fillStyle = b.color;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, BULLET_RADIUS, 0, Math.PI*2);
+      ctx.fill();
+    });
+
+    // Draw zombies
+    if(gameMode === 'zombies') {
+      gameState.zombies.forEach(z => {
+        ctx.fillStyle = '#880000';
+        ctx.beginPath();
+        ctx.arc(z.x, z.y, ZOMBIE_RADIUS, 0, Math.PI*2);
+        ctx.fill();
+        // Health bar
+        ctx.fillStyle = '#f00';
+        ctx.fillRect(z.x - ZOMBIE_RADIUS, z.y - ZOMBIE_RADIUS - 10, ZOMBIE_RADIUS*2, 5);
+        ctx.fillStyle = '#0f0';
+        ctx.fillRect(z.x - ZOMBIE_RADIUS, z.y - ZOMBIE_RADIUS - 10, ZOMBIE_RADIUS*2 * (z.health/(50 + gameState.wave*10)), 5);
+      });
+      // Wave info
+      ctx.fillStyle = '#eee';
+      ctx.font = '20px Arial';
+      ctx.textAlign = 'left';
+      ctx.fillText(`Wave: ${gameState.wave}`, 10, 30);
+      if(gameState.zombies.length === 0) {
+        ctx.fillText(`Next wave in: ${Math.ceil(gameState.waveTimer)}s`, 10, 60);
+      }
+    }
+
+    // Scoreboard
+    scoreboardDiv.innerHTML = '<h3>Scores</h3>';
+    const scores = Object.values(gameState.players)
+      .sort((a,b) => b.score - a.score)
+      .map(p => `${p.name}: ${p.score} (Kills: ${p.kills})`);
+    scores.forEach(s => {
+      const div = document.createElement('div');
+      div.textContent = s;
+      scoreboardDiv.appendChild(div);
+    });
+  }
+
+  // Input Handling
+  const keys = {};
+  window.addEventListener('keydown', e => {
+    keys[e.key.toLowerCase()] = true;
+  });
+  window.addEventListener('keyup', e => {
+    keys[e.key.toLowerCase()] = false;
+  });
+
+  // Mouse angle tracking
+  let mouseX = 0, mouseY = 0;
+  gameCanvas.addEventListener('mousemove', e => {
+    const rect = gameCanvas.getBoundingClientRect();
+    mouseX = e.clientX - rect.left;
+    mouseY = e.clientY - rect.top;
+  });
+  gameCanvas.addEventListener('mousedown', e => {
+    if(gameState && gameState.players[playerId]) {
+      gameState.players[playerId].inputs.shoot = true;
+    }
+  });
+  gameCanvas.addEventListener('mouseup', e => {
+    if(gameState && gameState.players[playerId]) {
+      gameState.players[playerId].inputs.shoot = false;
+    }
+  });
+
+  // Send local input to host
+  function sendInput() {
+    if(!gameRunning) return;
+    if(!gameState.players[playerId]) return;
+    const inputs = {
+      up: keys['w'] || false,
+      down: keys['s'] || false,
+      left: keys['a'] || false,
+      right: keys['d'] || false,
+      shoot: gameState.players[playerId].inputs.shoot || false,
+      mouseAngle: Math.atan2(mouseY - gameState.players[playerId].y, mouseX - gameState.players[playerId].x)
+    };
+    if(conn && conn.open) {
+      conn.send({type:'input', inputs});
+    }
+    // Also update local player input for prediction
+    gameState.players[playerId].inputs = inputs;
+  }
+
+  // Game Start
+  async function startGame() {
+    showGame();
+    gameRunning = true;
+    lastFrameTime = 0;
+
+    // Setup PeerJS
+    setupPeer();
+
+    // Wait for peer open
+    await new Promise(resolve => {
+      peer.on('open', () => resolve());
+    });
+
+    // Register player with backend for matchmaking
+    try {
+      const res = await apiFetch('/matchmake', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({mode: gameMode, peerId, mapVote})
+      });
+      lobbyId = res.lobbyId;
+      lobbyPlayers = res.players;
+      isHost = res.isHost;
+      mapId = res.mapId;
+
+      // Connect to other players
+      if(!isHost) {
+        // Connect to host
+        conn = peer.connect(res.hostPeerId);
+        conn.on('open', () => {
+          log('Connected to host');
+          setupConnection(conn);
+          // Send customization
+          conn.send({type:'customization', color: customization.color, weapon: customization.weapon});
+        });
+        conn.on('data', data => {
+          if(data.type === 'state') {
+            gameState = data.state;
+            updateChat();
+          } else if(data.type === 'chat') {
+            gameState.chat.push({from: data.from, message: data.message});
+            updateChat();
+          }
+        });
+      } else {
+        // Host connects to all others
+        for(const p of lobbyPlayers) {
+          if(p.peerId !== peerId) {
+            const c = peer.connect(p.peerId);
+            c.on('open', () => {
+              log('Connected to player ' + p.username);
+              setupConnection(c);
+              // Send customization
+              c.send({type:'customization', color: customization.color, weapon: customization.weapon});
+            });
+            c.on('data', data => {
+              handleData(c.peer, data);
+            });
+          }
+        }
+        // Host initializes game state
+        initGameState();
+        mapId = res.mapId;
+        const map = getMapById(mapId);
+        // Add all players to game state
+        lobbyPlayers.forEach((p, i) => {
+          const spawn = map.spawnPoints[i % map.spawnPoints.length];
+          addPlayer(p.peerId, p.username, p.customization || customization, spawn);
+        });
+        // Start first wave if zombies mode
+        if(gameMode === 'zombies') {
+          gameState.wave = 0;
+          gameState.waveTimer = 0;
+          gameState.zombies = [];
+          startNextWave();
+        }
+      }
+
+      // Add local playerId if missing
+      if(!gameState.players[playerId]) {
+        const spawn = getMapById(mapId).spawnPoints[0];
+        addPlayer(playerId, username, customization, spawn);
+      }
+
+      // Start game loop
+      requestAnimationFrame(gameLoop);
+
+      // Input sending interval
+      setInterval(sendInput, 50);
+
+    } catch(e) {
+      lobbyMessage.textContent = 'Failed to join lobby: ' + e.message;
+      logout();
+    }
+  }
+
+  // Chat send
+  chatInput.addEventListener('keydown', e => {
+    if(e.key === 'Enter' && chatInput.value.trim()) {
+      const msg = chatInput.value.trim();
+      chatInput.value = '';
+      if(isHost) {
+        gameState.chat.push({from: username, message: msg});
+        updateChat();
+        broadcast({type:'chat', from: username, message: msg});
+      } else {
+        conn && conn.send({type:'chat', message: msg});
+      }
+    }
+  });
+
+  // Apply customization button
+  applyCustomBtn.addEventListener('click', async () => {
+    customization.color = colorPicker.value;
+    customization.weapon = weaponSelect.value;
+    if(gameState && gameState.players[playerId]) {
+      gameState.players[playerId].color = customization.color;
+      gameState.players[playerId].weapon = customization.weapon;
+    }
+    if(isHost) {
+      broadcast({type:'customization', color: customization.color, weapon: customization.weapon});
+    } else {
+      conn && conn.send({type:'customization', color: customization.color, weapon: customization.weapon});
+    }
+    await saveCustomization();
+  });
+
+  // Exit game button
+  exitGameBtn.addEventListener('click', () => {
+    gameRunning = false;
+    if(peer) peer.destroy();
+    peer = null;
+    conn = null;
+    connections = {};
+    showLobby();
+    loadLeaderboard();
+  });
+
+  // Join lobby button
+  joinLobbyBtn.addEventListener('click', () => {
+    gameMode = modeSelect.value;
+    if(!mapVote) {
+      lobbyMessage.textContent = 'Please vote for a map before joining.';
+      return;
+    }
+    lobbyMessage.textContent = 'Joining lobby...';
+    startGame();
+  });
+
+  // Submit map vote
+  submitVoteBtn.addEventListener('click', () => {
+    if(!mapVote) return;
+    lobbyMessage.textContent = `You voted for: ${MAPS.find(m => m.id === mapVote).name}`;
+    submitVoteBtn.disabled = true;
+  });
+
+  // Login button
+  loginBtn.addEventListener('click', login);
+  // Logout button
+  logoutBtn.addEventListener('click', logout);
+
+  // Auto focus username input
+  usernameInput.focus();
+
+  // On load, check if token stored
+  (async () => {
+    const storedToken = localStorage.getItem('tds_token');
+    if(storedToken) {
+      token = storedToken;
+      try {
+        const profile = await apiFetch('/profile');
+        username = profile.username;
+        playerId = profile.playerId;
+        customization = profile.customization || customization;
+        colorPicker.value = customization.color;
+        weaponSelect.value = customization.weapon;
+        showLobby();
+        loadLeaderboard();
+      } catch(e) {
+        localStorage.removeItem('tds_token');
+        logout();
+      }
+    }
+  })();
+
+  // Save token on login
+  async function saveToken() {
+    if(token) localStorage.setItem('tds_token', token);
+  }
+
+  // Override login to save token
+  loginBtn.addEventListener('click', async () => {
+    await login();
+    await saveToken();
+  });
+
+})();
+</script>
+
+</body>
+</html>
