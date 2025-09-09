@@ -1,0 +1,8 @@
+{
+  "name": "gamegamegsame",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "jose": "^4.15.1"
+  }
+}
