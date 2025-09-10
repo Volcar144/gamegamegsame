@@ -535,12 +535,7 @@
 
   // PeerJS Setup
   function setupPeer() {
-    peer = new Peer(undefined, {
-      host: 'peerjs-server.herokuapp.com',
-      secure: true,
-      port: 443,
-      debug: 2
-    });
+    peer = new Peer()
     peer.on('open', id => {
       peerId = id;
       log('PeerJS connected with ID: ' + id);
